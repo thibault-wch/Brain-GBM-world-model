@@ -31,7 +31,7 @@ The codebase is built using Python, relying heavily on `torch` for deep learning
 
 ```bash
 # Clone the repository
-git clone [https://github.com/thibault-wch/Brain-GBM-world-model.git](https://github.com/thibault-wch/Brain-GBM-world-model.git)
+git clone https://github.com/thibault-wch/Brain-GBM-world-model.git
 cd Brain-GBM-world-model
 
 # Create and activate a conda environment
