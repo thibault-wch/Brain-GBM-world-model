@@ -1,0 +1,21 @@
+compute_environment: LOCAL_MACHINE
+distributed_type: DEEPSPEED
+num_machines: 1
+machine_rank: 0
+num_processes: 2     # 单卡=1
+main_process_ip: 127.0.0.1
+main_process_port: 0      # 单机可固定成常见端口；也可以用 0 自动选
+mixed_precision: bf16
+downcast_bf16: "no"
+rdzv_backend: static
+same_network: true
+use_cpu: false
+
+deepspeed_config:
+  deepspeed_multinode_launcher: standard
+  zero_stage: 2
+  gradient_accumulation_steps: 1
+  gradient_clipping: 1.0
+  offload_optimizer_device: cpu
+  offload_param_device: cpu
+  zero3_init_flag: true
