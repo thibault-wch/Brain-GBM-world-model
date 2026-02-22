@@ -35,7 +35,7 @@ git clone [https://github.com/thibault-wch/Brain-GBM-world-model.git](https://gi
 cd Brain-GBM-world-model
 
 # Create and activate a conda environment
-conda create -n brainwm python=3.12
+conda create -n brainwm python=3.10.18
 conda activate brainwm
 
 
