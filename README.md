@@ -2,8 +2,7 @@
 
 [![Paper](https://img.shields.io/badge/Paper-arXiv-red)](https://arxiv.org/abs/2603.07562)
 
-This is the official repository for **Brain-WM**, as proposed in the manuscript: "**Brain-WM: Brain Glioblastoma World Model**".
-
+This is the official repository for "**Brain-WM: Brain Glioblastoma World Model**".
 
 ## 📖 Overview
 
@@ -99,7 +98,6 @@ Choose the appropriate script based on your target task.
 
 This work is heavily based on [taming-transformers](https://github.com/CompVis/taming-transformers), [transformers](https://github.com/huggingface/transformers), [accelerate](https://github.com/huggingface/accelerate), [diffusers](https://github.com/huggingface/diffusers), [Show-o](https://github.com/showlab/Show-o/), and [Show-o2](https://github.com/showlab/Show-o/tree/main/show-o2). We extend our sincere thanks to all the authors for their outstanding open-source contributions.
 
-## 📝 Citation
 
 If you find this code or our paper useful for your research, please star 🌟 this repository and cite our work:
 
