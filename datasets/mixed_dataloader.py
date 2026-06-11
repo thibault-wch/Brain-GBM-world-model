@@ -153,20 +153,8 @@ class MixedDataLoader:
                 batched[k] = list(chain.from_iterable(v))
             else:
                 if len(v) == 1:
-                    batched[k] = v[0]               # 关键：避免多出一个维度
+                    batched[k] = v[0]
                 else:
                     batched[k] = torch.cat(v, dim=0)
         return batched
 
-
-    # def collate_fn(self, batch):
-    #     batched = collections.defaultdict(list)
-    #     for data in batch:
-    #         for k, v in data.items():
-    #             batched[k].append(v)
-    #     for k, v in batched.items():
-    #         if k in ('texts', 'data_type'):
-    #             batched[k] = list(chain.from_iterable(v))
-    #         else:
-    #             batched[k] = torch.concat(v, dim=0)
-    #     return batched

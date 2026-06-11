@@ -717,10 +717,8 @@ class Qwen2DecoderLayerDual(GradientCheckpointingLayer):
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         if latent_cond_embeddings is None:
-            # print('enter left')
             hidden_states = self.mlp1(hidden_states) 
         else:
-            # print('enter right')
             hidden_states = self.mlp2(hidden_states)
         hidden_states = residual + hidden_states
 

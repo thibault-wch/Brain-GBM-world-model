@@ -441,9 +441,6 @@ class Attention(nn.Module):
 
         causal_mask = attention_mask
         attn_weights = attn_weights + causal_mask
-        # if attention_mask is not None:  # no matter the length, we just slice it
-        #     causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
-        #     attn_weights = attn_weights + causal_mask
 
         # upcast attention to fp32
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)

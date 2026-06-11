@@ -47,9 +47,6 @@ model:
         num_labels: 5
         add_qk_norm: True
         add_time_embeds: True
-        # frozen_params: [ 'image_embedder_und', 'und_trans', 'position_embedding', 'image_embedder_gen', 'showo',   'time_embed_proj']
-        # weak_params : ['lm_head','cond_proj','diffusion','diff_proj']
-    #    params_not_load: ['fusion_proj','cond_proj','diffusion','diff_proj',]
         params_not_load: null
 
     clip:
@@ -63,14 +60,6 @@ dataset:
     mixed_loader_mode: "max_size_cycle"
     params:
         spatial_size: ${model.showo.spatial_size_my}
-        # train_t2i_shards_path_or_url: "path/to/your.jsonl"
-        # train_mmu_shards_path_or_url: "path/to/your/image/dir"
-        # annotation_path: "path/to/blip_laion_cc_sbu_558k.json"
-        # is_clip_encoder: False
-        # default_system_prompt: ""
-        # add_caption_prompt: True
-        # validation_prompts_file: "prompts/t2i_prompts.txt"
-        # shuffle_buffer_size: 1000
         num_workers: 6
         pin_memory: True
         persistent_workers: True

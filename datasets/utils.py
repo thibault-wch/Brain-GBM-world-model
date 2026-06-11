@@ -53,8 +53,6 @@ def format_sequence_gen_qwen2_5(text_tokens, system_tokens, bos_id, eos_id, boi_
                                 num_image_tokens, max_seq_len, system_token_len):
     if system_token_len == 0:
         modality_positions = torch.tensor([[len(text_tokens) + 1 + 1, num_image_tokens]])
-        # text_labels = [bos_id] + [-100] * len(text_tokens) + [boi_id] + [-100] * num_image_tokens + [eoi_id] + [eos_id]
-        # text_labels = [bos_id] + text_tokens + [boi_id] + [-100] * num_image_tokens + [eoi_id] + [eos_id]
         text_labels = [-100] + [-100] * len(text_tokens) + [-100] + [-100] * num_image_tokens + [-100] + [-100]
         text_tokens = [bos_id] + text_tokens + [boi_id] + [img_pad_id] * num_image_tokens + [eoi_id] + [eos_id]
     else:

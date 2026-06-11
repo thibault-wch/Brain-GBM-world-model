@@ -1,6 +1,8 @@
 import torch as th
 import math
 import re
+from collections import OrderedDict
+
 
 class EasyDict:
     def __init__(self, sub_dict):
@@ -73,8 +75,6 @@ def infer_num_layers_from_state_dict(sd):
         raise ValueError("Could not infer number of layers from state_dict keys.")
     return max_idx + 1
 
-import re
-from collections import OrderedDict
 
 def infer_num_layers_from_state_dict(sd):
     pat = re.compile(r"^model\.layers\.(\d+)\.")
@@ -87,8 +87,6 @@ def infer_num_layers_from_state_dict(sd):
         raise ValueError("Cannot infer num_hidden_layers (no keys like 'model.layers.<i>.*').")
     return mx + 1
 
-import re
-from collections import OrderedDict
 
 def _infer_num_layers_from_sd(sd: dict) -> int:
     pat = re.compile(r"^model\.layers\.(\d+)\.")
@@ -101,42 +99,36 @@ def _infer_num_layers_from_sd(sd: dict) -> int:
         raise ValueError("Cannot infer num_hidden_layers from keys like 'model.layers.<i>.*'.")
     return mx + 1
 
-def convert_qwen2_to_qwen2_dual(src_state_dict: dict, two_thirds, num_hidden_layers: int = None):
+
+def convert_qwen2_to_qwen2_dual(src_state_dict: dict, two_thirds: int, num_hidden_layers: int = None):
     """
-    将单-MLP 的 Qwen2 checkpoint（键名形如: model.layers.i.*）转换为 Qwen2-dual 的命名：
-      - 目标层命名：showo.model.layers.* 与 showo.model.dual_layers.*；lm_head.* -> showo.lm_head.*
-      - 前 two_thirds 层  -> showo.model.layers.[0..two_thirds-1]
-      - 后 (L - two_thirds) 层 -> showo.model.dual_layers.[0..(L-two_thirds-1)]
-      - 对映射到 dual_layers 的每层：将源层的 MLP 权重复制到 mlp1.* 和 mlp2.*（两者相同）
-    典型：原 L=28，two_thirds=14，则 0..13 -> layers，14..27 -> dual_layers[0..13]
+    Convert single-MLP Qwen2 checkpoint to Qwen2-dual naming conventions.
+    - First `two_thirds` layers map to `showo.model.layers.*`
+    - Remaining layers map to `showo.model.dual_layers.*` with MLPs duplicated to mlp1 and mlp2.
     """
     sd = src_state_dict
     if num_hidden_layers is None:
         num_hidden_layers = _infer_num_layers_from_sd(sd)
+
     L = num_hidden_layers
 
     if not (0 < two_thirds <= L):
         raise ValueError(f"two_thirds={two_thirds} out of range (L={L}).")
-    one_third = L - two_thirds  # 要映射到 dual_layers 的层数
 
+    one_third = L - two_thirds
     new_sd = OrderedDict()
-
-    # ---------- 顶层：把非 layers.* 的键重命名到 showo.* ----------
-    # 例：model.embed_tokens.weight -> showo.model.embed_tokens.weight
-    #     lm_head.weight           -> showo.lm_head.weight
     layer_pat = re.compile(r"^model\.layers\.(\d+)\.")
+
+    # Top-level: rename non-layer keys
     for k, v in sd.items():
         if layer_pat.match(k):
             continue
-        if k.startswith("model."):
-            new_k = "showo." + k       # -> showo.model.*
-        elif k.startswith("lm_head."):
-            new_k = "showo." + k       # -> showo.lm_head.*
+        if k.startswith("model.") or k.startswith("lm_head."):
+            new_sd["showo." + k] = v
         else:
-            new_k = k                  # 其他罕见顶层键，原样保留
-        new_sd[new_k] = v
+            new_sd[k] = v
 
-    # ---------- 前 two_thirds 层：直接复制到 showo.model.layers.i.* ----------
+    # First portion: standard layer copy
     for i in range(two_thirds):
         src_prefix = f"model.layers.{i}."
         tgt_prefix = f"showo.model.layers.{i}."
@@ -144,32 +136,30 @@ def convert_qwen2_to_qwen2_dual(src_state_dict: dict, two_thirds, num_hidden_lay
             if k.startswith(src_prefix):
                 new_sd[k.replace(src_prefix, tgt_prefix)] = v
 
-    # ---------- 后 1/3 层：映射到 showo.model.dual_layers.j.* ----------
-    # 复制 MLP 到 mlp1 与 mlp2；其余子模块（attn/norm等）直接改前缀
+    # Second portion: dual layer mapping
     mlp_suffixes = [
         "mlp.gate_proj.weight", "mlp.up_proj.weight", "mlp.down_proj.weight",
-        "mlp.gate_proj.bias",   "mlp.up_proj.bias",   "mlp.down_proj.bias",
+        "mlp.gate_proj.bias", "mlp.up_proj.bias", "mlp.down_proj.bias",
     ]
 
     for j in range(one_third):
         i = two_thirds + j
         src_layer_prefix = f"showo.model.layers.{i}."
-        tgt_dual_prefix  = f"showo.model.dual_layers.{j}."
+        tgt_dual_prefix = f"showo.model.dual_layers.{j}."
 
-        # 非 MLP：直接重命名前缀
         for k, v in sd.items():
             if not k.startswith(src_layer_prefix):
                 continue
-            if ".mlp." in k:
-                continue
-            new_sd[k.replace(src_layer_prefix, tgt_dual_prefix)] = v
 
-        # MLP：复制到 mlp1.* 和 mlp2.*
+            # Non-MLP components
+            if ".mlp." not in k:
+                new_sd[k.replace(src_layer_prefix, tgt_dual_prefix)] = v
+
+        # Duplicate MLPs into mlp1 and mlp2
         for suf in mlp_suffixes:
             sk = f"{src_layer_prefix}{suf}"
-            if sk not in sd:
-                continue
-            new_sd[f"{tgt_dual_prefix}{suf.replace('mlp.', 'mlp1.')}"] = sd[sk]
-            new_sd[f"{tgt_dual_prefix}{suf.replace('mlp.', 'mlp2.')}"] = sd[sk]
+            if sk in sd:
+                new_sd[f"{tgt_dual_prefix}{suf.replace('mlp.', 'mlp1.')}"] = sd[sk]
+                new_sd[f"{tgt_dual_prefix}{suf.replace('mlp.', 'mlp2.')}"] = sd[sk]
 
     return new_sd

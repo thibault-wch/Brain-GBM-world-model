@@ -118,6 +118,5 @@ class ode:
             t = time_shift(mu, 1.0, t)
         atol = [self.atol] * len(x) if isinstance(x, tuple) else [self.atol]
         rtol = [self.rtol] * len(x) if isinstance(x, tuple) else [self.rtol]
-        # print('current t')
         samples = odeint(_fn, x, t, method=self.sampler_type, atol=atol, rtol=rtol)
         return samples

@@ -92,10 +92,6 @@ class ShowoSemanticLayers(ModelMixin, ConfigMixin):
             clamped_sims = torch.clamp(similarities, 0.0001, 0.9999)
             distill_loss = -torch.log(clamped_sims).mean()
 
-            # if self.config.self_sim_distill:
-            # sim_mat_tgt = clip_features @ clip_features.T
-            # sim_mat_src = image_embeds_und @ image_embeds_und.T
-            # sim_mat_loss = F.mse_loss(sim_mat_src, sim_mat_tgt)
 
             return image_embeds_und, distill_loss.to(
                 image_embeds_und.dtype)  # , sim_mat_loss.to(image_embeds_und.dtype)

@@ -1,19 +1,6 @@
-# coding=utf-8
-# Copyright 2025 NUS Show Lab, HuggingFace.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 import os
+
+os.environ["TOKENIZERS_PARALLELISM"] = "true"
 import json
 import logging
 import math
@@ -26,9 +13,7 @@ from PIL import Image
 from omegaconf import OmegaConf
 import wandb
 import torch
-# 开启异常检测，这会降低速度，但能报错在具体的代码行
-# torch.autograd.set_detect_anomaly(True) 
-os.environ["TOKENIZERS_PARALLELISM"] = "true"
+import torch.distributed as dist
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
@@ -47,20 +32,20 @@ from peft import PeftModel
 if torch.cuda.is_available():
     flex_attention = torch.compile(flex_attention)
 
-from datasets.glioma_dataset import create_medical_dataloader,MedicalPairImageTextDataset
+from datasets.glioma_dataset import create_medical_dataloader, MedicalPairImageTextDataset
 from datasets.mixed_dataloader import MixedDataLoader
-from utils import add_default_before_last,get_config, flatten_omega_conf, AverageMeter, denorm, denorm_vid, get_hyper_params, \
-    path_to_llm_name, _freeze_params,_weak_params,_count_params,collect_lora_targets_full,collect_modules_to_save_for_full_ft,mask_grad_last_k_rows
+from utils import add_default_before_last, get_config, flatten_omega_conf, AverageMeter, denorm, denorm_vid, \
+    get_hyper_params, \
+    path_to_llm_name, _freeze_params, _weak_params, _count_params, collect_lora_targets_full, \
+    collect_modules_to_save_for_full_ft, mask_grad_last_k_rows
 from transport import Sampler, create_transport
 from transport.utils import convert_qwen2_to_qwen2_dual
 
-
 logger = get_logger(__name__, log_level="INFO")
 
-import torch.distributed as dist
+
 def is_main_process() -> bool:
     return (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
-
 
 
 def main():
@@ -69,7 +54,6 @@ def main():
     #########################
     config = get_config()
 
-    
     # Enable TF32 on Ampere GPUs
     if config.training.enable_tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -77,7 +61,7 @@ def main():
         torch.backends.cudnn.deterministic = False
 
     config.experiment.logging_dir = str(Path(config.experiment.output_dir) / "logs")
-    print(f'cofig for: {config}')
+    print(f'config for: {config}')
     accelerator = Accelerator(
         gradient_accumulation_steps=config.training.gradient_accumulation_steps,
         mixed_precision=config.training.mixed_precision,
@@ -168,33 +152,29 @@ def main():
     if config.model.vae_model.type == 'wan21':
         from models import WanVAE
         vae_model = WanVAE(vae_pth=config.model.vae_model.pretrained_model_path,
-                        #    dtype=torch.bfloat16,
+                           #    dtype=torch.bfloat16,
                            dtype=weight_type,
                            device=accelerator.device)
     else:
         raise NotImplementedError
 
     # Initialize Show-o model
-    text_tokenizer, showo_token_ids = get_text_tokenizer(config.model.showo.llm_model_path, 
+    text_tokenizer, showo_token_ids = get_text_tokenizer(config.model.showo.llm_model_path,
                                                          add_showo_tokens=True,
                                                          return_showo_token_ids=True,
                                                          llm_name=path_to_llm_name[config.model.showo.llm_model_path])
     config.model.showo.llm_vocab_size = len(text_tokenizer)
 
     if config.model.showo.load_from_showo:
-    #     model = Showo2Qwen2_5.from_pretrained(config.model.showo.pretrained_model_path, 
-    #                                         #   ignore_mismatched_sizes=True, 
-    #                                         #   low_cpu_mem_usage=True,       
-    #                                           use_safetensors=False).to(accelerator.device)
-    # else:
         print(f'config voc size: {config.model.showo.llm_vocab_size}')
         model = Showo2Qwen2_5(**config.model.showo).to(accelerator.device)
+        # config the showo-2 weight
         load_path = '/autodl-fs/data/pytorch_model.bin' if config.model.showo.pretrained_model_path is None else config.model.showo.pretrained_model_path
         if config.model.showo.pretrained_model_path is None:
-            print(config.model.showo.share_layer_num[0],config.model.showo.share_layer_num)
+            print(config.model.showo.share_layer_num[0], config.model.showo.share_layer_num)
             state_dict = convert_qwen2_to_qwen2_dual(torch.load(load_path, map_location="cpu"),
-                                                 config.model.showo.share_layer_num[0],
-                                                 config.model.showo.total_layer_num)
+                                                     config.model.showo.share_layer_num[0],
+                                                     config.model.showo.total_layer_num)
 
         # not load some parameters
         if config.model.showo.params_not_load is not None:
@@ -209,7 +189,6 @@ def main():
         model.load_state_dict(state_dict, strict=False)
         del state_dict
 
-    print(len(text_tokenizer))
     model.reset_vocbulary(text_tokenizer)
     targets = collect_lora_targets_full(model)
     modules_to_save = collect_modules_to_save_for_full_ft(model)  # lm_head + cond_proj 全量
@@ -220,17 +199,15 @@ def main():
     else:
         print(f"[LoRA targets] {len(targets)} layers")
         peft_config = LoraConfig(
-        r=160, #224
-        lora_alpha=160, #112
-        target_modules=targets, # optionally indicate target modules
-        modules_to_save=modules_to_save,  # ★ lm_head/cond_proj 全量
-        )   
+            r=160,
+            lora_alpha=160,
+            target_modules=targets,  # optionally indicate target modules
+            modules_to_save=modules_to_save,
+        )
         model = get_peft_model(model, peft_config)
 
     from peft.utils.other import AuxiliaryTrainingWrapper
 
-
-    # （可选）双保险：把 modules_to_save 的参数显式置为可训练
     for name, mod in model.named_modules():
         if name in modules_to_save:
             for p in mod.parameters(recurse=False):
@@ -240,66 +217,40 @@ def main():
         if isinstance(m, AuxiliaryTrainingWrapper):
             print("[WRAPPED BY AuxiliaryTrainingWrapper]", n)
 
-
-    # model = PeftModel.from_pretrained(base_model, lora_path)
-    
-        
-    
-    
     # only update the final 5 embeddings
     mask_handle = mask_grad_last_k_rows(model.showo.lm_head, k=5)
-    # if config.model.showo.lora_path is not None:
-    #     print('load lora path from:',config.model.showo.lora_path)
-    #     lora_state_dict=torch.load(config.model.showo.lora_path)
-    #     # lora_state_dict=add_default_before_last(torch.load(config.model.showo.lora_path))
-    #     # 保留：查看 LoRA 的所有键（关键信息）
-    #     print("LoRA state_dict keys:", lora_state_dict.keys())
-    #     # 修改：只查看模型的键（而非完整参数），用于对比匹配性
-    #     print("Model state_dict keys:", model.state_dict().keys())
-    #     model.load_state_dict(lora_state_dict,strict=True)
-    #     del lora_state_dict
-    
-
 
     # Choose layers to freeze
-    # _freeze_params(model, config.model.showo.frozen_params)
-    # weak some layers to train
-    # _weak_params(model, config.model.showo.weak_params)
-    # model.showo.lm_head.weight.requires_grad=True
     print(f'lm head weight:{model.showo.lm_head.weight.requires_grad}')
     print(f'intput weight:{model.showo.get_input_embeddings().weight.requires_grad}')
     print(f'output weight:{model.showo.get_output_embeddings().weight.requires_grad}')
     # params_count
     _count_params(model)
 
-
     preproc_config = config.dataset.preprocessing
     dataset_config = config.dataset.params
 
-    spatial_size_my=config.dataset.params.spatial_size
-    # config.model.showo.spatial_size_my= spatial_size_my
-    
-    num_image_tokens_my=int((spatial_size_my[0]//16)*(spatial_size_my[1]//16)*(spatial_size_my[2]//4))
-    max_seq_len_my= num_image_tokens_my+200
+    spatial_size_my = config.dataset.params.spatial_size
+
+    num_image_tokens_my = int((spatial_size_my[0] // 16) * (spatial_size_my[1] // 16) * (spatial_size_my[2] // 4))
+    max_seq_len_my = num_image_tokens_my + 200
     print(f'num_image_tokens_my: {num_image_tokens_my}, max_seq_len_my: {max_seq_len_my}')
 
     # for time embedding
     if config.model.showo.add_time_embeds:
-        # we prepend the time embedding to vision tokens
         config.dataset.preprocessing.num_mmu_image_tokens += 1
         config.dataset.preprocessing.num_t2i_image_tokens += 1
         config.dataset.preprocessing.num_hq_image_tokens += 1
         config.dataset.preprocessing.num_video_tokens += 1
         config.dataset.preprocessing.num_mixed_modal_tokens += 1
-        num_image_tokens_my+=1
-        max_seq_len_my+=1
+        num_image_tokens_my += 1
+        max_seq_len_my += 1
 
     ##################################
     #   Optimizer and LR scheduler   #
     #################################
     optimizer_config = config.optimizer.params
     optimizer_type = config.optimizer.name
-    # 稳一点：只把典型 LoRA 适配器参数(lora_A/lora_B)算进来，避免误命中
     import re
     _lora_pat = re.compile(r"(?:^|[.\-_])lora(?:_[AB])?(?:[.\-_]|$)")
     optimizer_grouped_parameters = [
@@ -310,39 +261,38 @@ def main():
             "weight_decay": optimizer_config.weight_decay,
             "lr": optimizer_config.learning_rate_ve,
         },
-        # 'fusion_proj' in n or 
         {
-            "params": [p for n, p in model.named_parameters() if (('cond_proj' in n or 'lm_head' in n or 'segmentor' in n or 'fusion_proj' in n) and p.requires_grad)],
+            "params": [p for n, p in model.named_parameters() if ((
+                                                                              'cond_proj' in n or 'lm_head' in n or 'segmentor' in n or 'fusion_proj' in n) and p.requires_grad)],
             "weight_decay": optimizer_config.weight_decay,
             "lr": optimizer_config.learning_rate_proj
         },
         {
-            "params": [p for n, p in model.named_parameters() if ((_lora_pat.search(n) is not None) and p.requires_grad)],
+            "params": [p for n, p in model.named_parameters() if
+                       ((_lora_pat.search(n) is not None) and p.requires_grad)],
             "weight_decay": optimizer_config.weight_decay,
             "lr": optimizer_config.learning_rate_lora
         },
 
         {
             "params": [p for n, p in model.named_parameters() if ((
-                'diffusion' in n or 'diff_proj' in n or 'time_embed_proj' in n 
-                )  and p.requires_grad )],
+                                                                          'diffusion' in n or 'diff_proj' in n or 'time_embed_proj' in n
+                                                                  ) and p.requires_grad)],
             "weight_decay": optimizer_config.weight_decay,
             "lr": optimizer_config.learning_rate_showo
         },
-        
+
     ]
 
-    # 去重 + 去空组（DeepSpeed/ZeRO 必做）
     _seen = set()
     for g in optimizer_grouped_parameters:
         uniq = []
         for p in g["params"]:
             if id(p) not in _seen:
-                uniq.append(p); _seen.add(id(p))
+                uniq.append(p);
+                _seen.add(id(p))
         g["params"] = uniq
     optimizer_grouped_parameters = [g for g in optimizer_grouped_parameters if len(g["params"]) > 0]
-
-
 
     if optimizer_type == "adamw":
         optimizer = AdamW(
@@ -365,22 +315,20 @@ def main():
     # This means that the dataloading is not deterministic, but it's fast and efficient.
 
     # Data for generation
-    train_dataloader_t2i =  create_medical_dataloader(
-    root="/root/autodl-tmp/dataset",
-    batch_size=config.training.batch_size_t2i,
-    text_tokenizer=text_tokenizer,
-    showo_token_ids=showo_token_ids,
-    spatial_size=spatial_size_my,
-    num_image_tokens=num_image_tokens_my,
-    max_seq_len=max_seq_len_my,  
-    # mode='test',
-    is_captioning=False,    # t2i
-    use_seg_mask=True,
-     drop_last=True,
+    train_dataloader_t2i = create_medical_dataloader(
+        root="/root/autodl-tmp/dataset",
+        batch_size=config.training.batch_size_t2i,
+        text_tokenizer=text_tokenizer,
+        showo_token_ids=showo_token_ids,
+        spatial_size=spatial_size_my,
+        num_image_tokens=num_image_tokens_my,
+        max_seq_len=max_seq_len_my,
+        is_captioning=False,  # t2i
+        use_seg_mask=True,
+        drop_last=True,
         shuffle=True,
         accelerator=accelerator
     )
-    
 
     # Data for understanding
     def create_dataloader(dataset, batch_size, collate_fn):
@@ -399,23 +347,21 @@ def main():
         dataloader = DataLoader(dataset, batch_size=batch_size,
                                 sampler=sampler, collate_fn=collate_fn,
                                 shuffle=shuffle, num_workers=dataset_config.num_workers,
-                                # mode='train',
                                 drop_last=True)
         return dataloader
 
-    dataset_mmu= MedicalPairImageTextDataset(
+    dataset_mmu = MedicalPairImageTextDataset(
         root="/root/autodl-tmp/dataset",
         text_tokenizer=text_tokenizer,
         showo_token_ids=showo_token_ids,
         spatial_size=spatial_size_my,
         num_image_tokens=num_image_tokens_my,
-        max_seq_len=max_seq_len_my, 
-        # mode='train',
-        is_captioning=True,    # t2i
+        max_seq_len=max_seq_len_my,
+        is_captioning=True,  # t2i
         use_seg_mask=True
     )
-    train_dataloader_mmu = create_dataloader(dataset_mmu, 
-                                             config.training.batch_size_mmu, 
+    train_dataloader_mmu = create_dataloader(dataset_mmu,
+                                             config.training.batch_size_mmu,
                                              dataset_mmu.collate_fn)
     num_update_steps_per_epoch = math.ceil(len(dataset_mmu) / total_batch_size)
     num_train_epochs = math.ceil(config.training.max_train_steps / num_update_steps_per_epoch)
@@ -454,19 +400,14 @@ def main():
             model.load_state_dict(state_dict, strict=False if config.model.showo.params_not_load is not None else True)
             del state_dict
 
-            
-
         # we recommend save and load the dataloader state
         # these save and recover functions are based on our internal packages
         # please modified them when necessary
         # recover_dataloader_state(accelerator.process_index, train_dataloader_t2i, config.experiment.output_dataloader_state_dir)
 
-
     # Combine these dataloaders into a single iterable model
     mixed_loader = MixedDataLoader(
-        # 
         loader_list=[train_dataloader_t2i, train_dataloader_mmu],
-        # samp_probs=config.dataset.samp_probs,
         accumulation=config.dataset.accumulation,
         mode=config.dataset.mixed_loader_mode
     )
@@ -478,13 +419,11 @@ def main():
         num_warmup_steps=config.lr_scheduler.params.warmup_steps,
     )
 
-
     ##################################
     #       Prepare accelerator     #
     #################################
     logger.info("Preparing model, optimizer and dataloaders")
     model, optimizer, lr_scheduler = accelerator.prepare(model, optimizer, lr_scheduler)
-
 
     ##################################
     #             Training          #
@@ -513,15 +452,12 @@ def main():
     def prepare_latents_and_labels(
             pixel_values: Union[torch.FloatTensor, torch.LongTensor],
             data_type,
-            shape,
             image_masks,
-            modality_positions
     ):
 
         if config.model.vae_model.type == 'wan21':
             if len(pixel_values.shape) == 4:
                 pixel_values = pixel_values.unsqueeze(2)
-            # print(f'pixel shape : {pixel_values.shape}')
             image_latents = vae_model.sample(pixel_values)
             recons_images = vae_model.batch_decode(image_latents)
             if pixel_values.shape[2] == 1:
@@ -530,17 +466,12 @@ def main():
         else:
             raise NotImplementedError
 
-        # print('after vae')
-
-        # c, h, w = image_latents.shape[1:]
-        # timesteps, noise, original image
-        # each for loop takes around 0.002, which is affordable
         t_list, xt_list, ut_list, masks = [], [], [], []
-        alpha_t_list=[]
+        alpha_t_list = []
         for i, tp in enumerate(data_type):
             # x0->noise x1->image
             t, x0, x1 = transport.sample(image_latents[i][None],
-                config.training.und_max_t0 if tp in ['mmu', 'mmu_vid'] else None)
+                                         config.training.und_max_t0 if tp in ['mmu', 'mmu_vid'] else None)
             # timesteps, noised image, velocity
             t, xt, ut = transport.path_sampler.plan(t, x0, x1)
             alpha_t = transport.path_sampler.compute_alpha_t(t)
@@ -556,15 +487,14 @@ def main():
         t = torch.stack(t_list, dim=0).squeeze(-1)
         xt = torch.cat(xt_list, dim=0)
         ut = torch.cat(ut_list, dim=0)
-        alphat= torch.cat(alpha_t_list,dim=0)
-        # print(alphat)
+        alphat = torch.cat(alpha_t_list, dim=0)
 
         if len(masks) != 0:
             masks = torch.cat(masks, dim=0)
         else:
             masks = image_masks
 
-        return xt, t, ut, recons_images, masks,alphat
+        return xt, t, ut, recons_images, masks, alphat
 
     batch_time_m = AverageMeter()
     data_time_m = AverageMeter()
@@ -575,11 +505,9 @@ def main():
         for batch in mixed_loader:
 
             text_tokens = batch['text_tokens'].to(accelerator.device)
-            # print(batch['text_labels'])
             if batch['text_labels'][0] is not None:
                 text_labels = batch['text_labels'].to(accelerator.device)
-            
-            #     text_labels=None
+
             pixel_values = batch['images'].to(accelerator.device).to(weight_type)
             if batch['data_type'][0] == 'interleaved_data':
                 b, n = pixel_values.shape[:2]
@@ -587,8 +515,8 @@ def main():
                 batch['data_type'] = batch['data_type'] * n
             else:
                 b, n = 0, 0
-            if batch['data_type'][0]=='t2i':
-                pixel_values_cond=batch['images_cond'].to(accelerator.device).to(weight_type)
+            if batch['data_type'][0] == 't2i':
+                pixel_values_cond = batch['images_cond'].to(accelerator.device).to(weight_type)
                 if len(pixel_values_cond.shape) == 4:
                     pixel_values_cond = pixel_values_cond.unsqueeze(2)
                 image_latents_cond = vae_model.sample(pixel_values_cond)
@@ -597,86 +525,65 @@ def main():
 
             text_masks = batch['text_masks'].to(accelerator.device)
             image_masks = batch['image_masks'].to(accelerator.device)
-            seg_masks= batch['seg_masks'].to(accelerator.device)
+            seg_masks = batch['seg_masks'].to(accelerator.device)
             modality_positions = batch['modality_positions'].to(accelerator.device)
-            # prepare image latents and labels
-
-            # print('get  data', pixel_values.shape) #successed
-            
-            image_latents, t, image_labels, recons_images, image_masks,alpha_t = prepare_latents_and_labels(pixel_values,
-                                                                                                    batch['data_type'],
-                                                                                                    (b, n),
-                                                                                                    image_masks,
-                                                                                                    modality_positions)
-            # print('get after vae',image_latents.shape) # successed
-            # B=None would potentially induce loss spike when there are a lot of ignored labels (-100) in the batch
-            # we must set B=text_tokens.shape[0] (loss spike may still happen sometimes)
-            # omni_mask_fn = omni_attn_mask(modality_positions)
-            # block_mask = create_block_mask(omni_mask_fn, B=text_tokens.shape[0], H=None,
-            #                                Q_LEN=preproc_config.max_seq_length,
-            #                                KV_LEN=preproc_config.max_seq_length, device=accelerator.device)
-            # or use naive omni attention mask, which is more stable
-
+            image_latents, t, image_labels, recons_images, image_masks, alpha_t = prepare_latents_and_labels(
+                pixel_values,
+                batch['data_type'],
+                (b, n),
+                image_masks,
+                modality_positions)
             block_mask = omni_attn_mask_naive(text_tokens.size(0),
                                               text_tokens.size(1),
                                               modality_positions,
                                               accelerator.device).to(weight_type)
-            # if image_latents_cond is None:
-            #     image_latents=image_labels
 
-            logits, loss,seg_loss_summary= model(text_tokens=text_tokens,
-                                                image_latents=image_latents,
-                                                image_latents_cond=image_latents_cond,
-                                                t=t.to(weight_type),
-                                                attention_mask=block_mask,
-                                                text_masks=text_masks,
-                                                image_masks=image_masks,
-                                                text_labels=text_labels,
-                                                image_labels=image_labels,
-                                                modality_positions=modality_positions,
-                                                output_hidden_states=True,
-                                                max_seq_len=text_tokens.size(1),
-                                                spatial_size_my= spatial_size_my,
-                                                seg_masks =seg_masks,
-                                                alpha_t=alpha_t,
-                                                device=accelerator.device,
-                                                )
-            
-            
-            # print('after model',loss) #failed
-            seg_loss=seg_loss_summary[0]
-            focal_ce_loss=seg_loss_summary[1]
-            dice_loss=seg_loss_summary[2]
+            logits, loss, seg_loss_summary = model(text_tokens=text_tokens,
+                                                   image_latents=image_latents,
+                                                   image_latents_cond=image_latents_cond,
+                                                   t=t.to(weight_type),
+                                                   attention_mask=block_mask,
+                                                   text_masks=text_masks,
+                                                   image_masks=image_masks,
+                                                   text_labels=text_labels,
+                                                   image_labels=image_labels,
+                                                   modality_positions=modality_positions,
+                                                   output_hidden_states=True,
+                                                   max_seq_len=text_tokens.size(1),
+                                                   spatial_size_my=spatial_size_my,
+                                                   seg_masks=seg_masks,
+                                                   alpha_t=alpha_t,
+                                                   device=accelerator.device,
+                                                   )
+
+            seg_loss = seg_loss_summary[0]
+            focal_ce_loss = seg_loss_summary[1]
+            dice_loss = seg_loss_summary[2]
             if image_latents_cond is not None:
                 loss_ntp = torch.tensor(0.0, device=accelerator.device)
                 loss_flow = loss
                 if is_main_process():
                     wandb.log({
-                        'per flow':loss_flow.item(),
+                        'per flow': loss_flow.item(),
                         'seg loss post': seg_loss.item(),
                         'focal ce loss post': focal_ce_loss.item(),
                         'dice loss post': dice_loss.item(),
                     })
-                # else:
-                #     print('per flow',loss_flow.item())
             else:
                 loss_ntp = loss
                 loss_flow = torch.tensor(0.0, device=accelerator.device)
                 if is_main_process():
                     wandb.log({
-                        'per ntp':loss_ntp.item(),
+                        'per ntp': loss_ntp.item(),
                         'seg loss mmu': seg_loss.item(),
                         'focal ce loss mmu': focal_ce_loss.item(),
                         'dice loss mmu': dice_loss.item(),
                     })
-            
-            # print(text_labels, image_labels, loss_ntp,loss_flow)
 
             # Gather the losses across all processes for logging (if we use distributed training).
             avg_loss_ntp = accelerator.gather(loss_ntp.repeat(total_batch_size_per_gpu)).mean()
             avg_loss_flow = accelerator.gather(loss_flow.repeat(total_batch_size_per_gpu)).mean()
             loss = config.training.ntp_coeff * loss_ntp + config.training.flow_coeff * loss_flow + seg_loss
-            # 
 
             accelerator.backward(loss.to(weight_type) / config.training.gradient_accumulation_steps)
 
@@ -712,8 +619,6 @@ def main():
                     lr = [group["lr"] for group in optimizer.param_groups]
                     if len(lr) == 3:
                         logs = {
-                            # "step_loss_ntp": avg_loss_ntp.item(),
-                            # "step_loss_flow": avg_loss_flow.item(),
                             "lr_ve": lr[0],
                             "lr_proj": lr[1],
                             "lr_showo": lr[2],
@@ -725,8 +630,6 @@ def main():
                         logger.info(
                             f"Epoch: {epoch} "
                             f"Step: {global_step + 1} "
-                            # f"Loss_NTP: {avg_loss_ntp.item():0.4f} "
-                            # f"Loss_FLOW: {avg_loss_flow.item():0.4f} "
                             f"Data (t): {data_time_m.val:0.4f}, {samples_per_second_per_gpu:0.2f}/s/gpu "
                             f"Batch (t): {batch_time_m.val:0.4f} "
                             f"LR_ve: {lr[0]:0.6f} "
@@ -735,8 +638,6 @@ def main():
                         )
                     else:
                         logs = {
-                            # "step_loss_ntp": avg_loss_ntp.item(),
-                            # "step_loss_flow": avg_loss_flow.item(),
                             "lr_proj": lr[0],
                             "samples/sec/gpu": samples_per_second_per_gpu,
                             "data_time": data_time_m.val,
@@ -746,8 +647,6 @@ def main():
                         logger.info(
                             f"Epoch: {epoch} "
                             f"Step: {global_step + 1} "
-                            # f"Loss_NTP: {avg_loss_ntp.item():0.4f} "
-                            # f"Loss_FLOW: {avg_loss_flow.item():0.4f} "
                             f"Data (t): {data_time_m.val:0.4f}, {samples_per_second_per_gpu:0.2f}/s/gpu "
                             f"Batch (t): {batch_time_m.val:0.4f} "
                             f"LR_proj: {lr[0]:0.6f}"
@@ -758,23 +657,9 @@ def main():
 
                 # Save model checkpoint
                 if (global_step + 1) % config.experiment.save_every == 0:
-                    
                     save_checkpoint(model, config, accelerator, global_step + 1)
-                    # save_dataloader_state(accelerator.process_index, train_dataloader_t2i, config.experiment.output_dataloader_state_dir)
 
                 if (global_step + 1) % config.experiment.generate_every == 0 and accelerator.is_main_process:
-                    # generate_videos(
-                    #     model,
-                    #     vae_model,
-                    #     text_tokenizer,
-                    #     config,
-                    #     global_step + 1,
-                    #     accelerator.device,
-                    #     weight_type,
-                    #     sampler,
-                    #     showo_token_ids,
-                    # )
-
                     generate_images(
                         model,
                         vae_model,
@@ -827,7 +712,7 @@ def main():
 
     accelerator.end_training()
 
-
+# not use
 @torch.no_grad()
 def generate_images(
         model,
@@ -848,7 +733,7 @@ def generate_images(
         prompts = f.read().splitlines()[:config.training.batch_size_t2i]
 
     num_t2i_image_tokens, num_mmu_image_tokens, num_video_tokens, max_seq_len, max_text_len, image_latent_dim, patch_size, latent_width, \
-    latent_height, pad_id, bos_id, eos_id, boi_id, eoi_id, bov_id, eov_id, image_pad_id, video_pad_id, guidance_scale \
+        latent_height, pad_id, bos_id, eos_id, boi_id, eoi_id, bov_id, eov_id, image_pad_id, video_pad_id, guidance_scale \
         = get_hyper_params(config, text_tokenizer, showo_token_ids, is_hq=False)  # hq means high resolution
 
     batch_text_tokens, batch_text_tokens_null, batch_modality_positions, batch_modality_positions_null = \
@@ -857,10 +742,10 @@ def generate_images(
             max_text_len, device
         )
     # 
-    latent_depth=32
+    latent_depth = 32
     z = torch.randn((len(prompts),
-                     image_latent_dim, 
-                     latent_depth, 
+                     image_latent_dim,
+                     latent_depth,
                      latent_height * patch_size,
                      latent_width * patch_size)).to(weight_type).to(device)
 
@@ -868,12 +753,6 @@ def generate_images(
         z = torch.cat([z, z], dim=0)
         text_tokens = torch.cat([batch_text_tokens, batch_text_tokens_null], dim=0)
         modality_positions = torch.cat([batch_modality_positions, batch_modality_positions_null], dim=0)
-        # B=None would potentially induce loss spike when there are a lot of ignored labels (-100) in the batch
-        # we must set B=text_tokens.shape[0] (loss spike may still happen sometimes)
-        # omni_mask_fn = omni_attn_mask(modality_positions)
-        # block_mask = create_block_mask(omni_mask_fn, B=z.size(0), H=None, Q_LEN=max_seq_len,
-        #                                KV_LEN=max_seq_len, device=device)
-        # or use naive omni attention mask, which is more stable
         block_mask = omni_attn_mask_naive(text_tokens.size(0),
                                           max_seq_len,
                                           modality_positions,
@@ -881,11 +760,6 @@ def generate_images(
     else:
         text_tokens = batch_text_tokens
         modality_positions = batch_modality_positions
-        # B=None would potentially induce loss spike when there are a lot of ignored labels (-100) in the batch
-        # we must set B=text_tokens.shape[0] (loss spike may still happen sometimes)
-        # omni_mask_fn = omni_attn_mask(modality_positions)
-        # block_mask = create_block_mask(omni_mask_fn, B=z.size(0), H=None, Q_LEN=max_seq_len,
-        #                                KV_LEN=max_seq_len, device=device)
         block_mask = omni_attn_mask_naive(text_tokens.size(0),
                                           max_seq_len,
                                           modality_positions,
@@ -949,7 +823,7 @@ def visualize_reconstruction(
     wandb_images = [wandb.Image(image, caption=captions[i]) for i, image in enumerate(pil_images)]
     wandb.log({"Original images vs. Reconstructed": wandb_images}, step=global_step)
 
-
+# not use
 @torch.no_grad()
 def generate_videos(
         model,
@@ -970,7 +844,7 @@ def generate_videos(
         prompts = f.read().splitlines()[:config.training.batch_size_t2i]
 
     num_image_tokens, num_video_tokens, max_seq_len, max_text_len, image_latent_dim, patch_size, latent_width, \
-    latent_height, pad_id, bos_id, eos_id, boi_id, eoi_id, bov_id, eov_id, image_pad_id, video_pad_id, guidance_scale \
+        latent_height, pad_id, bos_id, eos_id, boi_id, eoi_id, bov_id, eov_id, image_pad_id, video_pad_id, guidance_scale \
         = get_hyper_params(config, text_tokenizer, showo_token_ids, is_video=True)
 
     batch_text_tokens, batch_text_tokens_null, batch_modality_positions, batch_modality_positions_null = \
@@ -980,8 +854,8 @@ def generate_videos(
         )
 
     T = 32
-    z = torch.randn((len(prompts), image_latent_dim, 
-                     T, latent_height * patch_size, 
+    z = torch.randn((len(prompts), image_latent_dim,
+                     T, latent_height * patch_size,
                      latent_width * patch_size)).to(
         device).to(weight_type)
 
@@ -989,12 +863,6 @@ def generate_videos(
         z = torch.cat([z, z], dim=0)
         text_tokens = torch.cat([batch_text_tokens, batch_text_tokens_null], dim=0)
         modality_positions = torch.cat([batch_modality_positions, batch_modality_positions_null], dim=0)
-        # B=None would potentially induce loss spike when there are a lot of ignored labels (-100) in the batch
-        # we must set B=text_tokens.shape[0] (loss spike may still happen sometimes)
-        # omni_mask_fn = omni_attn_mask(modality_positions)
-        # block_mask = create_block_mask(omni_mask_fn, B=z.size(0), H=None, Q_LEN=max_seq_len,
-        #                                KV_LEN=max_seq_len, device=device)
-        # or use naive omni attention mask, which is more stable
         block_mask = omni_attn_mask_naive(text_tokens.size(0),
                                           max_seq_len,
                                           modality_positions,
@@ -1002,11 +870,6 @@ def generate_videos(
     else:
         text_tokens = batch_text_tokens
         modality_positions = batch_modality_positions
-        # B=None would potentially induce loss spike when there are a lot of ignored labels (-100) in the batch
-        # we must set B=text_tokens.shape[0] (loss spike may still happen sometimes)
-        # omni_mask_fn = omni_attn_mask(modality_positions)
-        # block_mask = create_block_mask(omni_mask_fn, B=z.size(0), H=None, Q_LEN=max_seq_len,
-        #                                KV_LEN=max_seq_len, device=device)
         block_mask = omni_attn_mask_naive(text_tokens.size(0),
                                           max_seq_len,
                                           modality_positions,

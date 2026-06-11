@@ -180,30 +180,6 @@ def prepare_mixed_modal_gen_input(prompts, nulls, text_tokenizer, num_image_toke
     return batch_text_tokens, batch_text_tokens_null, batch_modality_positions, batch_modality_positions_null
 
 
-# def prepare_mixed_modal_gen_input(prompt, text_tokenizer, num_image_tokens, boi_id, eoi_id, img_pad_id, pad_id, device):
-#     text_tokens = text_tokenizer(prompt, add_special_tokens=False).input_ids
-#
-#     modality_positions = torch.Tensor([[len(text_tokens), num_image_tokens]]).long().unsqueeze(0)
-#     text_tokens = text_tokens + [img_pad_id] * num_image_tokens + [eoi_id]
-#
-#     modality_positions_null = torch.Tensor([[2, num_image_tokens]]).long().unsqueeze(0)
-#     text_tokens_null = [text_tokens[0]] + [boi_id] + [img_pad_id] * num_image_tokens + [eoi_id]
-#
-#     len_a = len(text_tokens)
-#     len_b = len(text_tokens_null)
-#     num_pads_a = max(len_a, len_b) - len_a
-#     num_pads_b = max(len_a, len_b) - len_b
-#
-#     text_tokens += [pad_id] * num_pads_a
-#     text_tokens_null += [pad_id] * num_pads_b
-#
-#     text_tokens = torch.tensor(text_tokens).unsqueeze(0)
-#     text_tokens_null = torch.tensor(text_tokens_null).unsqueeze(0)
-#
-#     return text_tokens.to(device), text_tokens_null.to(device), \
-#            modality_positions.to(device), modality_positions_null.to(device)
-
-
 class PatchEmbed(nn.Module):
     """2D Image to Patch Embedding"""
 

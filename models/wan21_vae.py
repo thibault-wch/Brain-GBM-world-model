@@ -107,7 +107,7 @@ class Resample(nn.Module):
                     cache_x = x[:, :, -CACHE_T:, :, :].clone()
                     if cache_x.shape[2] < 2:
                         cache_x = torch.cat([torch.zeros_like(cache_x), cache_x], dim=2)
-                    x = self.time_conv(x)  # 无cache的因果卷积
+                    x = self.time_conv(x)  # No cache
                     feat_cache[idx] = cache_x
                     feat_idx[0] += 1
                 else:
@@ -152,32 +152,13 @@ class Resample(nn.Module):
                     x = self.time_conv(torch.cat([pad, pre_x], 2))
                     feat_cache[idx] = x[:, :, -1:, :, :].clone()
                     feat_idx[0] += 1
-                    # print(feat_cache[idx].shape,x.shape,'first ok')
                 else:
                     cache_x = x[:, :, -1:, :, :].clone()
-                    # if cache_x.shape[2] < 2 and feat_cache[idx] is not None and feat_cache[idx]!='Rep':
-                    #     # cache last frame of last two chunk
-                    #     cache_x = torch.cat([feat_cache[idx][:, :, -1, :, :].unsqueeze(2).to(cache_x.device), cache_x], dim=2)
-                    # print(torch.cat([feat_cache[idx][:, :, -1:, :, :].to(cache_x.device), x], 2).shape,'second ok')
                     x = self.time_conv(
                             torch.cat([feat_cache[idx][:, :, -1:, :, :].to(cache_x.device), x], 2))
                     feat_cache[idx] = cache_x
                     feat_idx[0] += 1
 
-                # if feat_cache[idx] is None:
-                #     x=self.time_conv(x)
-                #     feat_cache[idx] = x[:, :, -1:, :, :].clone()
-                #     feat_idx[0] += 1
-                    
-                # else:
-                #     cache_x = x[:, :, -1:, :, :].clone()
-                #     # if cache_x.shape[2] < 2 and feat_cache[idx] is not None and feat_cache[idx]!='Rep':
-                #     #     # cache last frame of last two chunk
-                #     #     cache_x = torch.cat([feat_cache[idx][:, :, -1, :, :].unsqueeze(2).to(cache_x.device), cache_x], dim=2)
-                #     x = self.time_conv(
-                #         torch.cat([feat_cache[idx][:, :, -1:, :, :], x], 2))
-                #     feat_cache[idx] = cache_x
-                #     feat_idx[0] += 1
         return x
 
     def init_weight(self, conv):
@@ -187,7 +168,6 @@ class Resample(nn.Module):
         one_matrix = torch.eye(c1, c2)
         init_matrix = one_matrix
         nn.init.zeros_(conv_weight)
-        # conv_weight.data[:,:,-1,1,1] = init_matrix * 0.5
         conv_weight.data[:, :, 1, 0, 0] = init_matrix  # * 0.5
         conv.weight.data.copy_(conv_weight)
         nn.init.zeros_(conv.bias.data)
@@ -197,7 +177,6 @@ class Resample(nn.Module):
         nn.init.zeros_(conv_weight)
         c1, c2, t, h, w = conv_weight.size()
         init_matrix = torch.eye(c1 // 2, c2)
-        # init_matrix = repeat(init_matrix, 'o ... -> (o 2) ...').permute(1,0,2).contiguous().reshape(c1,c2)
         conv_weight[:c1 // 2, :, -1, 0, 0] = init_matrix
         conv_weight[c1 // 2:, :, -1, 0, 0] = init_matrix
         conv.weight.data.copy_(conv_weight)
